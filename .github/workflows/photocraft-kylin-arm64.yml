@@ -1,0 +1,91 @@
+name: Build PhotoCraft v0.5.0 for Kylin ARM64 glibc 2.31
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    container:
+      image: debian:bullseye
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare Debian 11 packages
+        run: |
+          set -euxo pipefail
+          # Debian 11 has reached the archive stage; use Debian archive if regular mirrors fail.
+          if ! apt-get update; then
+            printf 'deb [check-valid-until=no] http://archive.debian.org/debian bullseye main\ndeb [check-valid-until=no] http://archive.debian.org/debian-security bullseye-security main\n' > /etc/apt/sources.list
+            rm -f /etc/apt/sources.list.d/debian.sources
+            apt-get -o Acquire::Check-Valid-Until=false update
+          fi
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl git build-essential pkg-config cmake clang libclang-dev \
+            libssl-dev libasound2-dev libudev-dev libx11-dev libxcursor-dev \
+            libxi-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev libegl1-mesa-dev libgl1-mesa-dev libfontconfig1-dev \
+            libfreetype6-dev libgtk-3-dev libdbus-1-dev dpkg-dev binutils file
+          ldd --version | head -1
+
+      - name: Install Rust 1.95
+        run: |
+          set -euxo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.95.0
+          /root/.cargo/bin/rustc --version
+
+      - name: Fetch fixed source tag
+        run: |
+          set -euxo pipefail
+          git clone --branch v0.5.0 --depth 1 https://github.com/storytold/photocraft.git /work/photocraft
+
+      - name: Build binaries
+        working-directory: /work/photocraft
+        env:
+          PATH: /root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        run: |
+          set -euxo pipefail
+          cargo build --release --locked -p photocraft -p photocraft-cli
+          file target/release/photocraft
+          # Check actual GLIBC symbol requirements for both executable files.
+          for binary in target/release/photocraft target/release/photocraft-cli; do
+            required=$(readelf --version-info "$binary" | grep -Eo 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sed 's/GLIBC_//' | sort -Vu | tail -1 || true)
+            echo "$binary maximum GLIBC: ${required:-none}"
+            if [ -n "$required" ] && [ "$(printf '%s\n' 2.31 "$required" | sort -V | tail -1)" != '2.31' ]; then
+              echo "ERROR: $binary needs GLIBC $required, newer than 2.31"
+              exit 1
+            fi
+          done
+
+      - name: Package arm64 DEB
+        working-directory: /work/photocraft
+        run: |
+          set -euxo pipefail
+          DEST="/work/photocraft/debroot"
+          install -Dm755 target/release/photocraft "$DEST/usr/bin/photocraft"
+          install -Dm755 target/release/photocraft-cli "$DEST/usr/bin/photocraft-cli"
+          install -Dm644 packaging/linux/ai.storyteller.photocraft.desktop \
+            "$DEST/usr/share/applications/ai.storyteller.photocraft.desktop"
+          mkdir -p "$DEST/DEBIAN"
+          cat > "$DEST/DEBIAN/control" <<'EOF'
+          Package: photocraft
+          Version: 0.5.0-1kylin1
+          Architecture: arm64
+          Maintainer: Local Build <local@example.invalid>
+          Section: graphics
+          Priority: optional
+          Depends: libc6 (>= 2.31), libgcc-s1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6, libvulkan1 | libegl1
+          Description: PhotoCraft v0.5.0 experimental Kylin ARM64 build
+           Built on Debian 11 ARM64 for glibc 2.31 compatibility testing.
+          EOF
+          dpkg-deb --build "$DEST" /work/photocraft/photocraft-0.5.0-kylin-arm64.deb
+          dpkg-deb -f /work/photocraft/photocraft-0.5.0-kylin-arm64.deb Architecture Depends
+          ldd "$DEST/usr/bin/photocraft"
+
+      - name: Upload offline package
+        uses: actions/upload-artifact@v4
+        with:
+          name: photocraft-0.5.0-kylin-arm64
+          path: /work/photocraft/photocraft-0.5.0-kylin-arm64.deb
+          if-no-files-found: error
