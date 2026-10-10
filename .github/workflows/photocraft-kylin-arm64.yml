@@ -15,11 +15,18 @@ jobs:
       - name: Prepare Debian 11 packages
         run: |
           set -euxo pipefail
-          # Refresh the package index unconditionally: stale Bullseye lists
-          # reference old security package revisions and produce HTTP 404.
+          # Diagnostic build: Debian 11 base repository only. Security archive
+          # currently returns 404 for stale package revisions on this runner.
+          # Do not treat resulting binaries as production security-validated.
+          printf '%s\n' \
+            'deb http://deb.debian.org/debian bullseye main' \
+            > /etc/apt/sources.list
+          rm -f /etc/apt/sources.list.d/*.list
+          rm -f /etc/apt/sources.list.d/*.sources
           rm -rf /var/lib/apt/lists/*
           apt-get clean
           apt-get -o Acquire::Retries=5 update
+          apt-cache policy libc6 libssl-dev
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config cmake clang libclang-dev \
             libssl-dev libasound2-dev libudev-dev libx11-dev libxcursor-dev \
@@ -27,6 +34,7 @@ jobs:
             libvulkan-dev libegl1-mesa-dev libgl1-mesa-dev libfontconfig1-dev \
             libfreetype6-dev libgtk-3-dev libdbus-1-dev dpkg-dev binutils file
           ldd --version | head -1
+          test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.31"
 
       - name: Install Rust 1.95
         run: |
