@@ -15,12 +15,11 @@ jobs:
       - name: Prepare Debian 11 packages
         run: |
           set -euxo pipefail
-          # Debian 11 has reached the archive stage; use Debian archive if regular mirrors fail.
-          if ! apt-get update; then
-            printf 'deb [check-valid-until=no] http://archive.debian.org/debian bullseye main\ndeb [check-valid-until=no] http://archive.debian.org/debian-security bullseye-security main\n' > /etc/apt/sources.list
-            rm -f /etc/apt/sources.list.d/debian.sources
-            apt-get -o Acquire::Check-Valid-Until=false update
-          fi
+          # Refresh the package index unconditionally: stale Bullseye lists
+          # reference old security package revisions and produce HTTP 404.
+          rm -rf /var/lib/apt/lists/*
+          apt-get clean
+          apt-get -o Acquire::Retries=5 update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
             ca-certificates curl git build-essential pkg-config cmake clang libclang-dev \
             libssl-dev libasound2-dev libudev-dev libx11-dev libxcursor-dev \
